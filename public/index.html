@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI学习伙伴体验课</title>
+  <link rel="icon" href="/favicon.png" />
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #050816;
+      color: #ffffff;
+      line-height: 1.6;
+    }
+
+    a {
+      text-decoration: none;
+      color: inherit;
+    }
+
+    .page {
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top, rgba(59, 130, 246, 0.18), transparent 35%),
+        radial-gradient(circle at right, rgba(0, 207, 255, 0.12), transparent 30%),
+        linear-gradient(180deg, #08111f 0%, #050816 100%);
+    }
+
+    .container {
+      width: 100%;
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 32px;
+      align-items: center;
+      padding: 56px 0 36px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 6px 12px;
+      border: 1px solid rgba(79, 195, 247, 0.4);
+      color: #7dd3fc;
+      border-radius: 999px;
+      font-size: 13px;
+      margin-bottom: 16px;
+      background: rgba(79, 195, 247, 0.08);
+    }
+
+    h1 {
+      font-size: 44px;
+      line-height: 1.2;
+      margin: 0 0 16px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+
+    .hero p {
+      font-size: 17px;
+      color: rgba(255, 255, 255, 0.8);
+      margin: 0 0 24px;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+    }
+
+    .btn {
+      padding: 14px 22px;
+      border-radius: 14px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      font-size: 15px;
+      font-weight: 600;
+      transition: 0.2s ease;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #3b82f6 0%, #00cfff 100%);
+      color: #fff;
+      box-shadow: 0 10px 24px rgba(0, 153, 255, 0.22);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      opacity: 0.96;
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.04);
+      border-color: rgba(255, 255, 255, 0.12);
+      color: #fff;
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .hero-tip {
+      font-size: 14px;
+      color: rgba(255, 255, 255, 0.58);
+    }
+
+    .hero-card {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 24px;
+      padding: 22px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.28);
+      backdrop-filter: blur(8px);
+    }
+
+    .preview-frame {
+      width: 100%;
+      aspect-ratio: 16 / 10;
+      border-radius: 18px;
+      border: 1px solid rgba(79, 195, 247, 0.2);
+      overflow: hidden;
+      background: #0b1120;
+    }
+
+    .preview-frame iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: block;
+    }
+
+    .section {
+      padding: 24px 0 12px;
+    }
+
+    .section-title {
+      font-size: 28px;
+      margin: 0 0 12px;
+      font-weight: 700;
+    }
+
+    .section-desc {
+      color: rgba(255, 255, 255, 0.72);
+      margin: 0 0 24px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+    }
+
+    .card {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 20px;
+      padding: 20px;
+    }
+
+    .card h3 {
+      margin: 0 0 10px;
+      font-size: 18px;
+    }
+
+    .card p {
+      margin: 0;
+      color: rgba(255, 255, 255, 0.72);
+      font-size: 15px;
+    }
+
+    .course-list {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+      margin-top: 8px;
+    }
+
+    .course-step {
+      background: linear-gradient(180deg, rgba(59, 130, 246, 0.09), rgba(255, 255, 255, 0.03));
+      border: 1px solid rgba(79, 195, 247, 0.15);
+      border-radius: 20px;
+      padding: 20px;
+    }
+
+    .course-step .step {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(79, 195, 247, 0.15);
+      color: #7dd3fc;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+
+    .course-step h4 {
+      margin: 0 0 10px;
+      font-size: 18px;
+    }
+
+    .course-step ul {
+      margin: 0;
+      padding-left: 18px;
+      color: rgba(255, 255, 255, 0.72);
+      font-size: 14px;
+    }
+
+    .experience-wrap {
+      margin-top: 22px;
+      border-radius: 24px;
+      overflow: hidden;
+      border: 1px solid rgba(79, 195, 247, 0.12);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .experience-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 18px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .experience-header .title {
+      font-size: 15px;
+      color: rgba(255, 255, 255, 0.85);
+      font-weight: 600;
+    }
+
+    .experience-header .hint {
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.55);
+    }
+
+    .experience-frame {
+      width: 100%;
+      height: 760px;
+      border: none;
+      display: block;
+      background: #000;
+    }
+
+    .footer {
+      padding: 32px 0 48px;
+      text-align: center;
+      color: rgba(255, 255, 255, 0.45);
+      font-size: 13px;
+    }
+
+    @media (max-width: 920px) {
+      .hero {
+        grid-template-columns: 1fr;
+      }
+
+      .grid-3,
+      .course-list {
+        grid-template-columns: 1fr;
+      }
+
+      h1 {
+        font-size: 34px;
+      }
+
+      .experience-frame {
+        height: 620px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="container">
+      <section class="hero">
+        <div>
+          <div class="badge">AI创作启蒙体验课</div>
+          <h1>3节课，做出自己的 AI 学习伙伴</h1>
+          <p>
+            面向小学三年级以上和初中生。不是单纯学代码，而是让孩子真正理解：
+            如何让 AI 帮自己做事、回答问题、完成一个可展示的作品。
+          </p>
+
+          <div class="hero-actions">
+            <button class="btn btn-primary" onclick="scrollToExperience()">立即体验</button>
+            <button class="btn btn-secondary" onclick="scrollToCourse()">了解课程</button>
+          </div>
+
+          <div class="hero-tip">
+            适合对象：小学高年级 / 初中生 · 零基础可参与 · 项目式学习
+          </div>
+        </div>
+
+        <div class="hero-card">
+          <div class="preview-frame">
+            <iframe src="/demo.html" title="AI学习伙伴预览"></iframe>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2 class="section-title">这不是一节“好玩而已”的课</h2>
+        <p class="section-desc">
+          孩子最终做出的，不只是一个会动的角色，而是一个能聊天、能回应、能表达的 AI 作品。
+        </p>
+
+        <div class="grid-3">
+          <div class="card">
+            <h3>看得见成果</h3>
+            <p>每节课都有明确输出，孩子能带走一个真正做出来的项目，而不是只听懂了概念。</p>
+          </div>
+          <div class="card">
+            <h3>不是死记代码</h3>
+            <p>重点不是语法，而是理解“如何让 AI 工作”，培养问题拆解和表达能力。</p>
+          </div>
+          <div class="card">
+            <h3>适合当下家长需求</h3>
+            <p>兼顾科技兴趣、项目成就感和未来能力启蒙，家长更容易理解课程价值。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="course-section">
+        <h2 class="section-title">3节课学什么</h2>
+        <p class="section-desc">
+          从“角色会动”，到“角色会聊天”，再到“角色会开口说话”，完成一个完整 AI 作品。
+        </p>
+
+        <div class="course-list">
+          <div class="course-step">
+            <div class="step">1</div>
+            <h4>让角色活起来</h4>
+            <ul>
+              <li>认识界面和基础逻辑</li>
+              <li>让角色移动、开场说话</li>
+              <li>完成第一个可展示效果</li>
+            </ul>
+          </div>
+
+          <div class="course-step">
+            <div class="step">2</div>
+            <h4>让角色会思考</h4>
+            <ul>
+              <li>接入 AI 聊天能力</li>
+              <li>让角色能够回答问题</li>
+              <li>理解“AI如何帮助自己”</li>
+            </ul>
+          </div>
+
+          <div class="course-step">
+            <div class="step">3</div>
+            <h4>让角色会开口说话</h4>
+            <ul>
+              <li>接入语音能力</li>
+              <li>优化角色互动体验</li>
+              <li>完成个人 AI 学习伙伴作品</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="experience-section">
+        <h2 class="section-title">在线体验 Demo</h2>
+        <p class="section-desc">
+          下面是课程 Demo 展示版本。孩子最终会做出类似这样的 AI 学习伙伴，并在此基础上加入自己的创意。
+        </p>
+
+        <div class="experience-wrap">
+          <div class="experience-header">
+            <div class="title">AI 学习伙伴在线体验</div>
+            <div class="hint">建议全屏体验，效果更完整</div>
+          </div>
+          <iframe class="experience-frame" src="/demo.html" title="AI学习伙伴体验区"></iframe>
+        </div>
+      </section>
+
+      <div class="footer">
+        AI学习伙伴体验课 · 项目演示页
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function scrollToCourse() {
+      document.getElementById("course-section").scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+
+    function scrollToExperience() {
+      document.getElementById("experience-section").scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+  </script>
+</body>
+</html>
