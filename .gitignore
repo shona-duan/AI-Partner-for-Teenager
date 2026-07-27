@@ -1,2 +1,7 @@
 .env
 .env.local
+node_modules/
+client/node_modules/
+client/dist/
+public/audio/*.mp3
+TODO.md

@@ -1,0 +1,90 @@
+.bubble-wrapper {
+  display: flex;
+  margin-bottom: 16px;
+  padding: 0 16px;
+}
+
+.bubble-wrapper.user {
+  justify-content: flex-end;
+}
+
+.bubble-wrapper.assistant {
+  justify-content: flex-start;
+}
+
+.bubble {
+  max-width: 75%;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  line-height: 1.6;
+  font-size: 14px;
+  word-break: break-word;
+}
+
+.bubble-user {
+  background: var(--primary);
+  color: white;
+  border-bottom-right-radius: 4px;
+}
+
+.bubble-assistant {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+}
+
+.bubble-text {
+  margin: 0;
+}
+
+.bubble-image {
+  max-width: 100%;
+  max-height: 200px;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  object-fit: contain;
+}
+
+/* Markdown 样式 */
+.bubble-markdown p {
+  margin: 0 0 8px;
+}
+
+.bubble-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.bubble-markdown code {
+  background: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.bubble-markdown pre {
+  background: #1e293b;
+  color: #e2e8f0;
+  padding: 12px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.bubble-markdown pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+.bubble-markdown ul,
+.bubble-markdown ol {
+  padding-left: 20px;
+  margin: 8px 0;
+}
+
+.bubble-markdown blockquote {
+  border-left: 3px solid var(--primary);
+  padding-left: 12px;
+  color: var(--text-secondary);
+  margin: 8px 0;
+}

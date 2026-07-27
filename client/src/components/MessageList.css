@@ -1,0 +1,32 @@
+.message-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 0;
+}
+
+.message-list.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-state {
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.empty-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.empty-title {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.empty-subtitle {
+  font-size: 14px;
+}

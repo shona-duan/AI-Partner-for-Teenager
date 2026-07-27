@@ -6,6 +6,7 @@ const express = require("express");
 const axios = require("axios");
 const fs = require("fs");
 const { v4: uuidv4 } = require("uuid");
+const multer = require("multer");
 
 const app = express();
 
@@ -13,10 +14,15 @@ const app = express();
 const sessionMessages = new Map();
 const SESSION_EXPIRE_MS = 24 * 60 * 60 * 1000; // 24小时
 
+// --- 图片上传配置 ---
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+
 // --- 1. 配置区（从 .env.local 读取） ---
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const VOLC_APPID = process.env.VOLC_APPID;
 const VOLC_TOKEN = process.env.VOLC_TOKEN;
+const VOLC_VISION_API_KEY = process.env.VOLC_VISION_API_KEY; // 豆包视觉模型 Key
+const VOLC_VISION_ENDPOINT = process.env.VOLC_VISION_ENDPOINT; // 豆包视觉模型 Endpoint ID
 
 if (!DEEPSEEK_API_KEY || !VOLC_APPID || !VOLC_TOKEN) {
   console.error("❌ 请检查 .env.local 配置，缺少必要的 API KEY");
@@ -37,6 +43,9 @@ app.use((req, res, next) => {
 
   next();
 });
+
+// --- 解析 JSON body（给 POST 接口用） ---
+app.use(express.json());
 
 // --- 3. 静态资源配置 ---
 // const audioFolder = path.join(__dirname, "public/audio");
@@ -206,7 +215,298 @@ app.get("/chat", async (req, res) => {
   }
 });
 
-// --- 4. 启动与清理 ---
+// --- 6. 流式聊天接口（React 前端用） ---
+const ROLE_PROMPTS = {
+  tutor: `你是一位耐心的学科辅导老师。你的教学方法：
+- 不直接给答案，用提问引导学生自己思考
+- 根据学生的回答判断理解程度，动态调整解释深度
+- 用生活中的例子和类比帮助理解抽象概念
+- 分步骤讲解，每一步确认学生理解后再继续
+- 如果学生卡住了，给一个小提示而不是直接揭晓答案
+- 学生答对时给予鼓励，答错时温和引导而不是否定
+请用中文回答，语气友好自然，适合中小学生理解。`,
+
+  mentor: `你是一位细致的写作反馈导师。你的工作方法：
+- 先仔细阅读学生提交的内容（可能是作文、作业照片的文字描述等）
+- 给出具体、有建设性的反馈，而不是笼统评价
+- 反馈要平衡：既指出做得好的地方，也指出可以改进的地方
+- 改进建议要具体可操作（"第二段可以加一个具体事例" 而不是 "写得更好一些"）
+- 如果是图片作业，先描述你看到的内容，再给出反馈
+- 最后邀请学生根据建议修改，表达愿意继续帮助的态度
+请用中文回答，语气温和鼓励。`,
+
+  coach: `你是一位善于引导反思的学习规划教练。你的方法：
+- 先了解学生当前的学习情况和目标
+- 帮助学生拆解大目标为可执行的小步骤
+- 引导学生反思：哪些方法有效、哪些需要调整
+- 帮助做考试复盘时，关注思维过程而不只是对错
+- 制定计划时考虑实际可执行性，不贪多
+- 用开放式问题推动学生深入思考
+请用中文回答，像一个了解你的学长/学姐那样交流。`,
+
+  // 兼容旧接口的角色
+  math: "你是一位耐心的数学老师，擅长用生活中的例子解释数学概念。回答时分步骤讲解，鼓励学生思考。",
+  english: "你是一位活泼的英语老师，擅长用中英对照的方式教学。适当穿插英文例句，帮助学生理解语境。",
+  science: "你是一位好奇心旺盛的科学老师，喜欢用实验和现象引导学生探索科学原理。回答生动有趣。",
+  general: "你是一位友善的AI学习伙伴，回答简洁清晰，适合小学高年级和初中生理解。",
+};
+
+app.post("/chat/stream", async (req, res) => {
+  const { message, sessionId = "default", role = "general" } = req.body;
+
+  if (!message) {
+    return res.status(400).json({ error: "message 不能为空" });
+  }
+
+  // 设置 SSE 响应头
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+
+  // 获取或初始化会话
+  const now = Date.now();
+  const existing = sessionMessages.get(sessionId);
+
+  if (!existing || now - existing.updatedAt > SESSION_EXPIRE_MS) {
+    sessionMessages.set(sessionId, {
+      messages: [
+        { role: "system", content: ROLE_PROMPTS[role] || ROLE_PROMPTS.general },
+      ],
+      updatedAt: now,
+    });
+  }
+
+  const sessionData = sessionMessages.get(sessionId);
+
+  // 如果角色切换了，更新 system prompt
+  const currentSystemPrompt = ROLE_PROMPTS[role] || ROLE_PROMPTS.general;
+  sessionData.messages[0] = { role: "system", content: currentSystemPrompt };
+
+  try {
+    const response = await axios.post(
+      "https://api.deepseek.com/v1/chat/completions",
+      {
+        model: "deepseek-chat",
+        messages: [...sessionData.messages, { role: "user", content: message }],
+        stream: true,
+      },
+      {
+        headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}` },
+        responseType: "stream",
+      },
+    );
+
+    let fullReply = "";
+    let buffer = "";
+
+    response.data.on("data", (chunk) => {
+      buffer += chunk.toString();
+      const lines = buffer.split("\n");
+      // 保留最后一个可能不完整的行
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+
+        const data = trimmed.slice(6);
+        if (data === "[DONE]") {
+          res.write("data: [DONE]\n\n");
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(data);
+          const content = parsed.choices?.[0]?.delta?.content;
+          if (content) {
+            fullReply += content;
+            res.write(`data: ${JSON.stringify({ content })}\n\n`);
+          }
+        } catch {
+          // 忽略解析失败的行
+        }
+      }
+    });
+
+    response.data.on("end", () => {
+      // 处理 buffer 中剩余数据
+      if (buffer.trim().startsWith("data: ") && buffer.trim().slice(6) !== "[DONE]") {
+        try {
+          const parsed = JSON.parse(buffer.trim().slice(6));
+          const content = parsed.choices?.[0]?.delta?.content;
+          if (content) {
+            fullReply += content;
+            res.write(`data: ${JSON.stringify({ content })}\n\n`);
+          }
+        } catch {
+          // 忽略
+        }
+      }
+
+      // 更新会话历史
+      const nonSystem = sessionData.messages.filter((m) => m.role !== "system");
+      nonSystem.push({ role: "user", content: message });
+      nonSystem.push({ role: "assistant", content: fullReply });
+      sessionData.messages = [sessionData.messages[0], ...nonSystem.slice(-20)];
+      sessionData.updatedAt = Date.now();
+
+      res.write("data: [DONE]\n\n");
+      res.end();
+    });
+
+    response.data.on("error", (err) => {
+      console.error("流式读取出错:", err.message);
+      res.write(`data: ${JSON.stringify({ error: "流式传输中断" })}\n\n`);
+      res.end();
+    });
+
+    // 客户端断开时中止上游请求
+    req.on("close", () => {
+      response.data.destroy();
+    });
+  } catch (err) {
+    const errorDetail = err.response
+      ? JSON.stringify(err.response.data)
+      : err.message;
+    console.error("流式接口报错:", errorDetail);
+    res.write(`data: ${JSON.stringify({ error: "AI 服务暂时不可用" })}\n\n`);
+    res.end();
+  }
+});
+
+// --- 7. 图片上传 + 视觉分析接口（Mentor 模式用，支持最多 5 张图） ---
+app.post("/chat/image", upload.array("images", 5), async (req, res) => {
+  const { message = "请帮我看看这份作业", sessionId = "default", role = "mentor" } = req.body;
+  const imageFiles = req.files;
+
+  if (!imageFiles || imageFiles.length === 0) {
+    return res.status(400).json({ error: "请上传图片" });
+  }
+
+  // 检查视觉模型配置
+  if (!VOLC_VISION_API_KEY || !VOLC_VISION_ENDPOINT) {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+    res.write(`data: ${JSON.stringify({ error: "视觉模型尚未配置。请在 .env.local 中设置 VOLC_VISION_API_KEY 和 VOLC_VISION_ENDPOINT" })}\n\n`);
+    res.write("data: [DONE]\n\n");
+    res.end();
+    return;
+  }
+
+  // 设置 SSE 响应头
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+
+  try {
+    // 构建多图 content 数组
+    const imageContents = imageFiles.map((file) => ({
+      type: "image_url",
+      image_url: { url: `data:${file.mimetype || "image/png"};base64,${file.buffer.toString("base64")}` },
+    }));
+
+    // 步骤1：调用豆包视觉模型识别所有图片内容
+    const visionResponse = await axios.post(
+      `https://ark.cn-beijing.volces.com/api/v3/chat/completions`,
+      {
+        model: VOLC_VISION_ENDPOINT,
+        messages: [
+          {
+            role: "user",
+            content: [
+              ...imageContents,
+              { type: "text", text: `这里有 ${imageFiles.length} 张图片，请仔细识别每张图片中的所有文字内容和题目，完整还原。如果有手写内容也请尽量识别。按图片顺序分别列出。` },
+            ],
+          },
+        ],
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${VOLC_VISION_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+      },
+    );
+
+    const recognizedContent = visionResponse.data.choices?.[0]?.message?.content || "无法识别图片内容";
+
+    // 步骤2：把识别结果 + 用户指令发给 DeepSeek 生成教学反馈（流式）
+    const systemPrompt = ROLE_PROMPTS[role] || ROLE_PROMPTS.mentor;
+    const fullMessage = `学生上传了 ${imageFiles.length} 张作业图片，以下是图片中识别出的内容：\n\n---\n${recognizedContent}\n---\n\n学生的问题/要求：${message}\n\n请根据以上内容给出具体的反馈和建议。`;
+
+    const streamResponse = await axios.post(
+      "https://api.deepseek.com/v1/chat/completions",
+      {
+        model: "deepseek-chat",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: fullMessage },
+        ],
+        stream: true,
+      },
+      {
+        headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}` },
+        responseType: "stream",
+      },
+    );
+
+    let buffer = "";
+
+    streamResponse.data.on("data", (chunk) => {
+      buffer += chunk.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+
+        const data = trimmed.slice(6);
+        if (data === "[DONE]") {
+          res.write("data: [DONE]\n\n");
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(data);
+          const content = parsed.choices?.[0]?.delta?.content;
+          if (content) {
+            res.write(`data: ${JSON.stringify({ content })}\n\n`);
+          }
+        } catch {
+          // 忽略
+        }
+      }
+    });
+
+    streamResponse.data.on("end", () => {
+      res.write("data: [DONE]\n\n");
+      res.end();
+    });
+
+    streamResponse.data.on("error", (err) => {
+      console.error("图片反馈流式读取出错:", err.message);
+      res.write(`data: ${JSON.stringify({ error: "流式传输中断" })}\n\n`);
+      res.end();
+    });
+
+    req.on("close", () => {
+      streamResponse.data.destroy();
+    });
+  } catch (err) {
+    const errorDetail = err.response ? JSON.stringify(err.response.data) : err.message;
+    console.error("图片接口报错:", errorDetail);
+    res.write(`data: ${JSON.stringify({ error: "图片分析服务暂时不可用" })}\n\n`);
+    res.write("data: [DONE]\n\n");
+    res.end();
+  }
+});
+
+// --- 8. 启动与清理 ---
 const PORT = 3001;
 app.listen(PORT, () => {
   console.log("========================================");
