@@ -8,10 +8,18 @@ function genId() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }
 
+// 工具名称中文映射
+const TOOL_NAME_MAP: Record<string, string> = {
+  generateQuiz: "生成练习题",
+  checkProgress: "评估学习进度",
+  suggestResources: "推荐学习资源",
+};
+
 export function useStreamChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [plan, setPlan] = useState<LearningPlan | null>(null);
+  const [activeTools, setActiveTools] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string>(genId());
 
@@ -80,12 +88,18 @@ export function useStreamChat() {
             try {
               const parsed = JSON.parse(data);
               if (parsed.error) throw new Error(parsed.error);
+              // 接收工具调用事件
+              if (parsed.toolCall) {
+                setActiveTools(parsed.toolCall);
+                continue;
+              }
               // 接收 Plan 更新事件
               if (parsed.planUpdate) {
                 setPlan(parsed.planUpdate);
                 continue;
               }
               if (parsed.content) {
+                setActiveTools([]);
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === assistantMsg.id
@@ -110,6 +124,7 @@ export function useStreamChat() {
         );
       } finally {
         setIsStreaming(false);
+        setActiveTools([]);
         abortRef.current = null;
       }
     },
@@ -225,5 +240,5 @@ export function useStreamChat() {
     sessionIdRef.current = genId();
   }, []);
 
-  return { messages, isStreaming, plan, send, stop, clear };
+  return { messages, isStreaming, plan, activeTools, TOOL_NAME_MAP, send, stop, clear };
 }

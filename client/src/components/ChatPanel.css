@@ -47,3 +47,27 @@
 .clear-btn:hover {
   border-color: #ef4444;
 }
+
+.tool-call-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
+  font-size: 13px;
+  color: var(--text-secondary, #6b7280);
+  background: var(--surface-secondary, #f9fafb);
+  border-top: 1px solid var(--border);
+}
+
+.tool-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary, #6366f1);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

@@ -264,6 +264,17 @@ const ROLE_PROMPTS = {
 - 有计划进行中：根据对话内容判断是否推进、调整或完成
 - 一次只推进一个步骤，确认学生掌握后再前进
 
+## 工具使用
+你有以下工具可以调用（系统会自动执行）：
+- generateQuiz：当学生需要练习或检验掌握程度时，生成针对性练习题
+- checkProgress：当你需要评估学生是否掌握当前步骤时使用
+- suggestResources：当学生某个知识点薄弱、需要额外练习方向时使用
+
+使用原则：
+- 不要每次都调用工具，只在教学需要时调用
+- 先和学生对话了解情况，觉得需要检测或出题时再调用
+- 调用工具后，基于工具返回的结果组织回复内容
+
 请用中文回答，像一个了解你的学长/学姐那样交流。不要让学生看到 PLAN_UPDATE 标记的存在。`,
 
   // 兼容旧接口的角色
@@ -274,6 +285,105 @@ const ROLE_PROMPTS = {
 };
 
 // --- Plan 解析与状态管理工具函数 ---
+
+// --- Function Calling 工具定义 ---
+const COACH_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "generateQuiz",
+      description: "根据当前学习步骤生成练习题，用于检测学生对知识点的掌握程度",
+      parameters: {
+        type: "object",
+        properties: {
+          topic: { type: "string", description: "练习题的知识点主题" },
+          difficulty: { type: "string", enum: ["easy", "medium", "hard"], description: "难度等级" },
+          count: { type: "integer", description: "生成题目数量，1-5之间" },
+        },
+        required: ["topic"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "checkProgress",
+      description: "评估学生在当前学习步骤的掌握程度，基于对话历史判断是否可以推进到下一步",
+      parameters: {
+        type: "object",
+        properties: {
+          stepTitle: { type: "string", description: "要评估的学习步骤名称" },
+          evidence: { type: "string", description: "学生掌握或未掌握的证据描述" },
+        },
+        required: ["stepTitle", "evidence"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "suggestResources",
+      description: "根据学生薄弱点推荐学习资源或练习方向",
+      parameters: {
+        type: "object",
+        properties: {
+          weakPoint: { type: "string", description: "学生的薄弱知识点" },
+          currentLevel: { type: "string", enum: ["beginner", "intermediate", "advanced"], description: "当前水平" },
+        },
+        required: ["weakPoint"],
+      },
+    },
+  },
+];
+
+// --- 工具执行函数 ---
+const toolCallLog = new Map();
+
+function executeToolCall(sessionId, toolName, args) {
+  // 记录调用日志
+  if (!toolCallLog.has(sessionId)) toolCallLog.set(sessionId, []);
+  toolCallLog.get(sessionId).push({
+    tool: toolName,
+    args,
+    timestamp: Date.now(),
+  });
+
+  switch (toolName) {
+    case "generateQuiz":
+      return JSON.stringify({
+        action: "generateQuiz",
+        topic: args.topic,
+        difficulty: args.difficulty || "medium",
+        count: args.count || 3,
+        instruction: `请根据以下要求生成练习题：主题「${args.topic}」，难度「${args.difficulty || "medium"}」，数量 ${args.count || 3} 道。每道题给出题目和参考答案，格式清晰。`,
+      });
+
+    case "checkProgress":
+      return JSON.stringify({
+        action: "checkProgress",
+        stepTitle: args.stepTitle,
+        evidence: args.evidence,
+        instruction: `请根据以下信息评估学生掌握程度：步骤「${args.stepTitle}」，证据：${args.evidence}。给出掌握程度评分(1-10)和是否建议推进到下一步。`,
+      });
+
+    case "suggestResources":
+      return JSON.stringify({
+        action: "suggestResources",
+        weakPoint: args.weakPoint,
+        currentLevel: args.currentLevel || "beginner",
+        instruction: `学生在「${args.weakPoint}」方面比较薄弱，当前水平：${args.currentLevel || "beginner"}。请推荐 2-3 个具体的练习方向或学习建议。`,
+      });
+
+    default:
+      return JSON.stringify({ error: "未知工具" });
+  }
+}
+
+// --- 获取工具调用日志 ---
+app.get("/tools/log/:sessionId", (req, res) => {
+  const log = toolCallLog.get(req.params.sessionId) || [];
+  res.json({ calls: log, totalCalls: log.length });
+});
 function parsePlanUpdate(text) {
   const match = text.match(/<!--PLAN_UPDATE:(.*?)-->/s);
   if (!match) return null;
@@ -362,6 +472,84 @@ app.get("/plan/:sessionId", (req, res) => {
   res.json({ plan: plan || null });
 });
 
+// --- 流式响应处理（抽取为公共函数）---
+function handleStreamResponse(response, res, sessionData, sessionId, role, message) {
+  let fullReply = "";
+  let buffer = "";
+
+  response.data.on("data", (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith("data: ")) continue;
+
+      const data = trimmed.slice(6);
+      if (data === "[DONE]") {
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(data);
+        const content = parsed.choices?.[0]?.delta?.content;
+        if (content) {
+          fullReply += content;
+          res.write(`data: ${JSON.stringify({ content })}\n\n`);
+        }
+      } catch {
+        // 忽略解析失败的行
+      }
+    }
+  });
+
+  response.data.on("end", () => {
+    // 处理 buffer 中剩余数据
+    if (buffer.trim().startsWith("data: ") && buffer.trim().slice(6) !== "[DONE]") {
+      try {
+        const parsed = JSON.parse(buffer.trim().slice(6));
+        const content = parsed.choices?.[0]?.delta?.content;
+        if (content) {
+          fullReply += content;
+          res.write(`data: ${JSON.stringify({ content })}\n\n`);
+        }
+      } catch {
+        // 忽略
+      }
+    }
+
+    // Coach 模式：解析 Plan 更新指令
+    if (role === "coach") {
+      const planUpdate = parsePlanUpdate(fullReply);
+      if (planUpdate) {
+        applyPlanUpdate(sessionId, planUpdate);
+        const updatedPlan = sessionPlans.get(sessionId);
+        if (updatedPlan) {
+          res.write(`data: ${JSON.stringify({ planUpdate: updatedPlan })}\n\n`);
+        }
+      }
+    }
+
+    // 更新会话历史（存储时去掉 PLAN_UPDATE 标记）
+    const cleanReply = fullReply.replace(/<!--PLAN_UPDATE:.*?-->/gs, "").trim();
+    const nonSystem = sessionData.messages.filter((m) => m.role !== "system");
+    nonSystem.push({ role: "user", content: message });
+    nonSystem.push({ role: "assistant", content: cleanReply });
+    sessionData.messages = [sessionData.messages[0], ...nonSystem.slice(-20)];
+    sessionData.updatedAt = Date.now();
+
+    res.write("data: [DONE]\n\n");
+    res.end();
+  });
+
+  response.data.on("error", (err) => {
+    console.error("流式读取出错:", err.message);
+    res.write(`data: ${JSON.stringify({ error: "流式传输中断" })}\n\n`);
+    res.end();
+  });
+}
+
 app.post("/chat/stream", async (req, res) => {
   const { message, sessionId = "default", role = "general" } = req.body;
 
@@ -407,11 +595,78 @@ app.post("/chat/stream", async (req, res) => {
   sessionData.messages[0] = { role: "system", content: systemWithPlan };
 
   try {
+    const userMessages = [...sessionData.messages, { role: "user", content: message }];
+
+    // Coach 模式：先用非流式请求检测是否需要调用工具
+    if (role === "coach") {
+      const toolCheckResponse = await axios.post(
+        "https://api.deepseek.com/v1/chat/completions",
+        {
+          model: "deepseek-chat",
+          messages: userMessages,
+          tools: COACH_TOOLS,
+          tool_choice: "auto",
+        },
+        {
+          headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}` },
+        },
+      );
+
+      const assistantMessage = toolCheckResponse.data.choices[0].message;
+
+      // 如果 AI 决定调用工具
+      if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
+        console.log(`[Tool Call] session=${sessionId}, tools=${assistantMessage.tool_calls.map(t => t.function.name).join(",")}`);
+
+        // 通知前端正在调用工具
+        const toolNames = assistantMessage.tool_calls.map(t => t.function.name);
+        res.write(`data: ${JSON.stringify({ toolCall: toolNames })}\n\n`);
+
+        // 执行所有工具调用，收集结果
+        const toolMessages = assistantMessage.tool_calls.map((tc) => {
+          const args = JSON.parse(tc.function.arguments);
+          const result = executeToolCall(sessionId, tc.function.name, args);
+          return {
+            role: "tool",
+            tool_call_id: tc.id,
+            content: result,
+          };
+        });
+
+        // 第二轮：带工具结果的流式请求
+        const streamMessages = [
+          ...userMessages,
+          assistantMessage,
+          ...toolMessages,
+        ];
+
+        const response = await axios.post(
+          "https://api.deepseek.com/v1/chat/completions",
+          {
+            model: "deepseek-chat",
+            messages: streamMessages,
+            stream: true,
+          },
+          {
+            headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}` },
+            responseType: "stream",
+          },
+        );
+
+        handleStreamResponse(response, res, sessionData, sessionId, role, message);
+        req.on("close", () => { response.data.destroy(); });
+        return;
+      }
+
+      // AI 没有调用工具但有直接回复内容 → 当作普通流式处理
+    }
+
+    // 普通流式请求（非 Coach 或 Coach 未触发工具）
     const response = await axios.post(
       "https://api.deepseek.com/v1/chat/completions",
       {
         model: "deepseek-chat",
-        messages: [...sessionData.messages, { role: "user", content: message }],
+        messages: userMessages,
         stream: true,
       },
       {
@@ -420,87 +675,8 @@ app.post("/chat/stream", async (req, res) => {
       },
     );
 
-    let fullReply = "";
-    let buffer = "";
-
-    response.data.on("data", (chunk) => {
-      buffer += chunk.toString();
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data: ")) continue;
-
-        const data = trimmed.slice(6);
-        if (data === "[DONE]") {
-          res.write("data: [DONE]\n\n");
-          return;
-        }
-
-        try {
-          const parsed = JSON.parse(data);
-          const content = parsed.choices?.[0]?.delta?.content;
-          if (content) {
-            fullReply += content;
-            res.write(`data: ${JSON.stringify({ content })}\n\n`);
-          }
-        } catch {
-          // 忽略解析失败的行
-        }
-      }
-    });
-
-    response.data.on("end", () => {
-      // 处理 buffer 中剩余数据
-      if (buffer.trim().startsWith("data: ") && buffer.trim().slice(6) !== "[DONE]") {
-        try {
-          const parsed = JSON.parse(buffer.trim().slice(6));
-          const content = parsed.choices?.[0]?.delta?.content;
-          if (content) {
-            fullReply += content;
-            res.write(`data: ${JSON.stringify({ content })}\n\n`);
-          }
-        } catch {
-          // 忽略
-        }
-      }
-
-      // Coach 模式：解析 Plan 更新指令
-      if (role === "coach") {
-        const planUpdate = parsePlanUpdate(fullReply);
-        if (planUpdate) {
-          applyPlanUpdate(sessionId, planUpdate);
-          // 通知前端计划已更新
-          const updatedPlan = sessionPlans.get(sessionId);
-          if (updatedPlan) {
-            res.write(`data: ${JSON.stringify({ planUpdate: updatedPlan })}\n\n`);
-          }
-        }
-      }
-
-      // 更新会话历史（存储时去掉 PLAN_UPDATE 标记）
-      const cleanReply = fullReply.replace(/<!--PLAN_UPDATE:.*?-->/gs, "").trim();
-      const nonSystem = sessionData.messages.filter((m) => m.role !== "system");
-      nonSystem.push({ role: "user", content: message });
-      nonSystem.push({ role: "assistant", content: cleanReply });
-      sessionData.messages = [sessionData.messages[0], ...nonSystem.slice(-20)];
-      sessionData.updatedAt = Date.now();
-
-      res.write("data: [DONE]\n\n");
-      res.end();
-    });
-
-    response.data.on("error", (err) => {
-      console.error("流式读取出错:", err.message);
-      res.write(`data: ${JSON.stringify({ error: "流式传输中断" })}\n\n`);
-      res.end();
-    });
-
-    // 客户端断开时中止上游请求
-    req.on("close", () => {
-      response.data.destroy();
-    });
+    handleStreamResponse(response, res, sessionData, sessionId, role, message);
+    req.on("close", () => { response.data.destroy(); });
   } catch (err) {
     const errorDetail = err.response
       ? JSON.stringify(err.response.data)

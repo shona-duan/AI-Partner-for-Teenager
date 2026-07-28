@@ -12,7 +12,7 @@ interface Props {
 }
 
 export default function ChatPanel({ currentRole, onRoleChange }: Props) {
-  const { messages, isStreaming, plan, send, stop, clear } = useStreamChat();
+  const { messages, isStreaming, plan, activeTools, TOOL_NAME_MAP, send, stop, clear } = useStreamChat();
 
   const handleRoleChange = (role: TeacherRole) => {
     onRoleChange(role);
@@ -30,6 +30,12 @@ export default function ChatPanel({ currentRole, onRoleChange }: Props) {
       <RoleSelector current={currentRole} onChange={handleRoleChange} />
       {currentRole === "coach" && plan && <PlanPanel plan={plan} />}
       <MessageList messages={messages} />
+      {activeTools.length > 0 && (
+        <div className="tool-call-indicator">
+          <span className="tool-spinner" />
+          正在调用：{activeTools.map(t => TOOL_NAME_MAP[t] || t).join("、")}
+        </div>
+      )}
       <InputBar
         onSend={send}
         isStreaming={isStreaming}
