@@ -8,6 +8,23 @@ export interface Message {
   timestamp: number;
 }
 
+// 学习计划（Agent 状态管理）
+export interface PlanStep {
+  title: string;
+  status: "pending" | "in_progress" | "done";
+  note: string;
+}
+
+export interface LearningPlan {
+  goal: string;
+  phase: "in_progress" | "completed";
+  currentStep: number;
+  steps: PlanStep[];
+  createdAt: number;
+  summary?: string;
+  completedAt?: number;
+}
+
 // 教学角色
 export type TeacherRole = "tutor" | "mentor" | "coach";
 

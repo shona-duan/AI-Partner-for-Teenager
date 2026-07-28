@@ -14,6 +14,9 @@ const app = express();
 const sessionMessages = new Map();
 const SESSION_EXPIRE_MS = 24 * 60 * 60 * 1000; // 24小时
 
+// --- Agent 状态管理（Coach 模式的学习计划）---
+const sessionPlans = new Map();
+
 // --- 图片上传配置 ---
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -21,8 +24,8 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const VOLC_APPID = process.env.VOLC_APPID;
 const VOLC_TOKEN = process.env.VOLC_TOKEN;
-const VOLC_VISION_API_KEY = process.env.VOLC_VISION_API_KEY; // 豆包视觉模型 Key
-const VOLC_VISION_ENDPOINT = process.env.VOLC_VISION_ENDPOINT; // 豆包视觉模型 Endpoint ID
+const VOLC_VISION_API_KEY = process.env.VOLC_VISION_API_KEY; // 火山方舟 API Key
+const VOLC_VISION_MODEL = process.env.VOLC_VISION_MODEL; // 豆包视觉模型名称
 
 if (!DEEPSEEK_API_KEY || !VOLC_APPID || !VOLC_TOKEN) {
   console.error("❌ 请检查 .env.local 配置，缺少必要的 API KEY");
@@ -235,14 +238,33 @@ const ROLE_PROMPTS = {
 - 最后邀请学生根据建议修改，表达愿意继续帮助的态度
 请用中文回答，语气温和鼓励。`,
 
-  coach: `你是一位善于引导反思的学习规划教练。你的方法：
+  coach: `你是一位善于引导反思的学习规划教练，具备任务拆解和状态管理能力。
+
+## 你的教学方法
 - 先了解学生当前的学习情况和目标
 - 帮助学生拆解大目标为可执行的小步骤
 - 引导学生反思：哪些方法有效、哪些需要调整
 - 帮助做考试复盘时，关注思维过程而不只是对错
 - 制定计划时考虑实际可执行性，不贪多
 - 用开放式问题推动学生深入思考
-请用中文回答，像一个了解你的学长/学姐那样交流。`,
+
+## 计划管理规则
+你在对话过程中需要维护一个结构化的学习计划。在每次回复的末尾，用 <!--PLAN_UPDATE:{"action":"..."}-->  标记输出计划更新指令。
+
+可用的 action：
+1. "create" — 创建新计划：<!--PLAN_UPDATE:{"action":"create","goal":"目标","steps":[{"title":"步骤名"},{"title":"步骤名"}]}-->
+2. "advance" — 推进当前步骤到下一步：<!--PLAN_UPDATE:{"action":"advance","note":"当前步骤的总结笔记"}-->
+3. "update_step" — 更新某步骤状态：<!--PLAN_UPDATE:{"action":"update_step","stepIndex":0,"status":"done","note":"笔记"}-->
+4. "revise" — 修改计划（加减步骤）：<!--PLAN_UPDATE:{"action":"revise","steps":[{"title":"新步骤1"},{"title":"新步骤2"}]}-->
+5. "complete" — 标记计划完成：<!--PLAN_UPDATE:{"action":"complete","summary":"总结"}-->
+6. 无需更新时不输出此标记
+
+## 状态流转
+- 新对话且无计划时：引导学生说出学习目标，然后用 create 创建计划
+- 有计划进行中：根据对话内容判断是否推进、调整或完成
+- 一次只推进一个步骤，确认学生掌握后再前进
+
+请用中文回答，像一个了解你的学长/学姐那样交流。不要让学生看到 PLAN_UPDATE 标记的存在。`,
 
   // 兼容旧接口的角色
   math: "你是一位耐心的数学老师，擅长用生活中的例子解释数学概念。回答时分步骤讲解，鼓励学生思考。",
@@ -250,6 +272,95 @@ const ROLE_PROMPTS = {
   science: "你是一位好奇心旺盛的科学老师，喜欢用实验和现象引导学生探索科学原理。回答生动有趣。",
   general: "你是一位友善的AI学习伙伴，回答简洁清晰，适合小学高年级和初中生理解。",
 };
+
+// --- Plan 解析与状态管理工具函数 ---
+function parsePlanUpdate(text) {
+  const match = text.match(/<!--PLAN_UPDATE:(.*?)-->/s);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    console.warn("Plan 更新指令解析失败:", match[1]);
+    return null;
+  }
+}
+
+function applyPlanUpdate(sessionId, update) {
+  let plan = sessionPlans.get(sessionId);
+
+  switch (update.action) {
+    case "create":
+      plan = {
+        goal: update.goal,
+        phase: "in_progress",
+        currentStep: 0,
+        steps: (update.steps || []).map((s) => ({
+          title: s.title,
+          status: "pending",
+          note: "",
+        })),
+        createdAt: Date.now(),
+      };
+      if (plan.steps.length > 0) plan.steps[0].status = "in_progress";
+      break;
+
+    case "advance":
+      if (!plan) return;
+      if (plan.currentStep < plan.steps.length) {
+        plan.steps[plan.currentStep].status = "done";
+        plan.steps[plan.currentStep].note = update.note || "";
+      }
+      plan.currentStep++;
+      if (plan.currentStep < plan.steps.length) {
+        plan.steps[plan.currentStep].status = "in_progress";
+      }
+      break;
+
+    case "update_step":
+      if (!plan) return;
+      const idx = update.stepIndex;
+      if (idx >= 0 && idx < plan.steps.length) {
+        plan.steps[idx].status = update.status || plan.steps[idx].status;
+        if (update.note) plan.steps[idx].note = update.note;
+      }
+      break;
+
+    case "revise":
+      if (!plan) return;
+      const doneSteps = plan.steps.filter((s) => s.status === "done");
+      const newSteps = (update.steps || []).map((s) => ({
+        title: s.title,
+        status: "pending",
+        note: "",
+      }));
+      plan.steps = [...doneSteps, ...newSteps];
+      plan.currentStep = doneSteps.length;
+      if (plan.currentStep < plan.steps.length) {
+        plan.steps[plan.currentStep].status = "in_progress";
+      }
+      break;
+
+    case "complete":
+      if (!plan) return;
+      plan.phase = "completed";
+      plan.steps.forEach((s) => { if (s.status !== "done") s.status = "done"; });
+      plan.summary = update.summary || "";
+      plan.completedAt = Date.now();
+      break;
+
+    default:
+      return;
+  }
+
+  sessionPlans.set(sessionId, plan);
+  console.log(`[Plan 更新] session=${sessionId}, action=${update.action}`);
+}
+
+// --- 获取当前计划状态的 API ---
+app.get("/plan/:sessionId", (req, res) => {
+  const plan = sessionPlans.get(req.params.sessionId);
+  res.json({ plan: plan || null });
+});
 
 app.post("/chat/stream", async (req, res) => {
   const { message, sessionId = "default", role = "general" } = req.body;
@@ -281,7 +392,19 @@ app.post("/chat/stream", async (req, res) => {
 
   // 如果角色切换了，更新 system prompt
   const currentSystemPrompt = ROLE_PROMPTS[role] || ROLE_PROMPTS.general;
-  sessionData.messages[0] = { role: "system", content: currentSystemPrompt };
+
+  // Coach 模式：注入当前 Plan 状态到 system prompt
+  let systemWithPlan = currentSystemPrompt;
+  if (role === "coach") {
+    const plan = sessionPlans.get(sessionId);
+    if (plan) {
+      systemWithPlan += `\n\n## 当前学习计划状态\n\`\`\`json\n${JSON.stringify(plan)}\n\`\`\`\n请基于此计划状态继续引导学生。`;
+    } else {
+      systemWithPlan += `\n\n## 当前状态\n学生尚未创建学习计划。请先了解学生的学习目标，然后帮助创建计划。`;
+    }
+  }
+
+  sessionData.messages[0] = { role: "system", content: systemWithPlan };
 
   try {
     const response = await axios.post(
@@ -303,7 +426,6 @@ app.post("/chat/stream", async (req, res) => {
     response.data.on("data", (chunk) => {
       buffer += chunk.toString();
       const lines = buffer.split("\n");
-      // 保留最后一个可能不完整的行
       buffer = lines.pop() || "";
 
       for (const line of lines) {
@@ -344,10 +466,24 @@ app.post("/chat/stream", async (req, res) => {
         }
       }
 
-      // 更新会话历史
+      // Coach 模式：解析 Plan 更新指令
+      if (role === "coach") {
+        const planUpdate = parsePlanUpdate(fullReply);
+        if (planUpdate) {
+          applyPlanUpdate(sessionId, planUpdate);
+          // 通知前端计划已更新
+          const updatedPlan = sessionPlans.get(sessionId);
+          if (updatedPlan) {
+            res.write(`data: ${JSON.stringify({ planUpdate: updatedPlan })}\n\n`);
+          }
+        }
+      }
+
+      // 更新会话历史（存储时去掉 PLAN_UPDATE 标记）
+      const cleanReply = fullReply.replace(/<!--PLAN_UPDATE:.*?-->/gs, "").trim();
       const nonSystem = sessionData.messages.filter((m) => m.role !== "system");
       nonSystem.push({ role: "user", content: message });
-      nonSystem.push({ role: "assistant", content: fullReply });
+      nonSystem.push({ role: "assistant", content: cleanReply });
       sessionData.messages = [sessionData.messages[0], ...nonSystem.slice(-20)];
       sessionData.updatedAt = Date.now();
 
@@ -385,12 +521,12 @@ app.post("/chat/image", upload.array("images", 5), async (req, res) => {
   }
 
   // 检查视觉模型配置
-  if (!VOLC_VISION_API_KEY || !VOLC_VISION_ENDPOINT) {
+  if (!VOLC_VISION_API_KEY || !VOLC_VISION_MODEL) {
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.flushHeaders();
-    res.write(`data: ${JSON.stringify({ error: "视觉模型尚未配置。请在 .env.local 中设置 VOLC_VISION_API_KEY 和 VOLC_VISION_ENDPOINT" })}\n\n`);
+    res.write(`data: ${JSON.stringify({ error: "视觉模型尚未配置。请在 .env.local 中设置 VOLC_VISION_API_KEY 和 VOLC_VISION_MODEL" })}\n\n`);
     res.write("data: [DONE]\n\n");
     res.end();
     return;
@@ -403,23 +539,23 @@ app.post("/chat/image", upload.array("images", 5), async (req, res) => {
   res.flushHeaders();
 
   try {
-    // 构建多图 content 数组
+    // 构建多图 input content 数组（火山方舟新版 API 格式）
     const imageContents = imageFiles.map((file) => ({
-      type: "image_url",
-      image_url: { url: `data:${file.mimetype || "image/png"};base64,${file.buffer.toString("base64")}` },
+      type: "input_image",
+      image_url: `data:${file.mimetype || "image/png"};base64,${file.buffer.toString("base64")}`,
     }));
 
     // 步骤1：调用豆包视觉模型识别所有图片内容
     const visionResponse = await axios.post(
-      `https://ark.cn-beijing.volces.com/api/v3/chat/completions`,
+      `https://ark.cn-beijing.volces.com/api/v3/responses`,
       {
-        model: VOLC_VISION_ENDPOINT,
-        messages: [
+        model: VOLC_VISION_MODEL,
+        input: [
           {
             role: "user",
             content: [
               ...imageContents,
-              { type: "text", text: `这里有 ${imageFiles.length} 张图片，请仔细识别每张图片中的所有文字内容和题目，完整还原。如果有手写内容也请尽量识别。按图片顺序分别列出。` },
+              { type: "input_text", text: `这里有 ${imageFiles.length} 张图片，请仔细识别每张图片中的所有文字内容和题目，完整还原。如果有手写内容也请尽量识别。按图片顺序分别列出。` },
             ],
           },
         ],
@@ -432,7 +568,12 @@ app.post("/chat/image", upload.array("images", 5), async (req, res) => {
       },
     );
 
-    const recognizedContent = visionResponse.data.choices?.[0]?.message?.content || "无法识别图片内容";
+    // 新版 API 响应格式：output[].content[].text
+    const outputItems = visionResponse.data.output || [];
+    const recognizedContent = outputItems
+      .filter((item) => item.type === "message" && item.role === "assistant")
+      .map((item) => item.content?.map((c) => c.text).join("") || "")
+      .join("\n") || "无法识别图片内容";
 
     // 步骤2：把识别结果 + 用户指令发给 DeepSeek 生成教学反馈（流式）
     const systemPrompt = ROLE_PROMPTS[role] || ROLE_PROMPTS.mentor;
@@ -521,6 +662,7 @@ setInterval(
     for (const [key, value] of sessionMessages.entries()) {
       if (now - value.updatedAt > SESSION_EXPIRE_MS) {
         sessionMessages.delete(key);
+        sessionPlans.delete(key);
         console.log(`[自动清理]: 已删除过期会话 ${key}`);
       }
     }

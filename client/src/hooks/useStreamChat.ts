@@ -1,5 +1,7 @@
 import { useState, useCallback, useRef } from "react";
-import type { Message, TeacherRole } from "../types";
+import type { Message, TeacherRole, LearningPlan } from "../types";
+
+const API_BASE = import.meta.env.VITE_API_BASE || "";
 
 // 生成简易 ID
 function genId() {
@@ -9,6 +11,7 @@ function genId() {
 export function useStreamChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [plan, setPlan] = useState<LearningPlan | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string>(genId());
 
@@ -41,7 +44,7 @@ export function useStreamChat() {
       abortRef.current = controller;
 
       try {
-        const res = await fetch("/chat/stream", {
+        const res = await fetch(`${API_BASE}/chat/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -77,6 +80,11 @@ export function useStreamChat() {
             try {
               const parsed = JSON.parse(data);
               if (parsed.error) throw new Error(parsed.error);
+              // 接收 Plan 更新事件
+              if (parsed.planUpdate) {
+                setPlan(parsed.planUpdate);
+                continue;
+              }
               if (parsed.content) {
                 setMessages((prev) =>
                   prev.map((m) =>
@@ -141,7 +149,7 @@ export function useStreamChat() {
     formData.append("role", role);
 
     try {
-      const res = await fetch("/chat/image", {
+      const res = await fetch(`${API_BASE}/chat/image`, {
         method: "POST",
         body: formData,
       });
@@ -213,8 +221,9 @@ export function useStreamChat() {
 
   const clear = useCallback(() => {
     setMessages([]);
+    setPlan(null);
     sessionIdRef.current = genId();
   }, []);
 
-  return { messages, isStreaming, send, stop, clear };
+  return { messages, isStreaming, plan, send, stop, clear };
 }

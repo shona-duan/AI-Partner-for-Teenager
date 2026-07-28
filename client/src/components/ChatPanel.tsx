@@ -2,6 +2,7 @@ import type { TeacherRole } from "../types";
 import MessageList from "./MessageList";
 import InputBar from "./InputBar";
 import RoleSelector from "./RoleSelector";
+import PlanPanel from "./PlanPanel";
 import { useStreamChat } from "../hooks/useStreamChat";
 import "./ChatPanel.css";
 
@@ -11,7 +12,7 @@ interface Props {
 }
 
 export default function ChatPanel({ currentRole, onRoleChange }: Props) {
-  const { messages, isStreaming, send, stop, clear } = useStreamChat();
+  const { messages, isStreaming, plan, send, stop, clear } = useStreamChat();
 
   const handleRoleChange = (role: TeacherRole) => {
     onRoleChange(role);
@@ -27,6 +28,7 @@ export default function ChatPanel({ currentRole, onRoleChange }: Props) {
         </button>
       </div>
       <RoleSelector current={currentRole} onChange={handleRoleChange} />
+      {currentRole === "coach" && plan && <PlanPanel plan={plan} />}
       <MessageList messages={messages} />
       <InputBar
         onSend={send}
