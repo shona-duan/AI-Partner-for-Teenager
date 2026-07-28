@@ -218,6 +218,46 @@ app.get("/chat", async (req, res) => {
   }
 });
 
+// --- TTS 合成接口（React 前端用）---
+app.post("/tts", async (req, res) => {
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ error: "text 不能为空" });
+
+  try {
+    const audioFileName = `${uuidv4()}.mp3`;
+    const audioPath = path.join(audioFolder, audioFileName);
+
+    const ttsResponse = await axios.post(
+      "https://openspeech.bytedance.com/api/v1/tts",
+      {
+        app: { appid: VOLC_APPID, token: VOLC_TOKEN, cluster: "volcano_tts" },
+        user: { uid: "student_demo" },
+        audio: { voice_type: "zh_female_linjianvhai_moon_bigtts", encoding: "mp3" },
+        request: { text, reqid: uuidv4(), operation: "query" },
+      },
+      {
+        responseType: "json",
+        headers: {
+          Authorization: `Bearer;${VOLC_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+      },
+    );
+
+    if (ttsResponse.data.code === 3000) {
+      const audioBuffer = Buffer.from(ttsResponse.data.data, "base64");
+      fs.writeFileSync(audioPath, audioBuffer);
+      res.json({ audioUrl: `/audio/${audioFileName}` });
+    } else {
+      console.error("TTS 异常:", ttsResponse.data.message);
+      res.status(500).json({ error: "语音合成失败" });
+    }
+  } catch (err) {
+    console.error("TTS 报错:", err.message);
+    res.status(500).json({ error: "语音合成服务不可用" });
+  }
+});
+
 // --- 6. 流式聊天接口（React 前端用） ---
 const ROLE_PROMPTS = {
   tutor: `你是一位耐心的学科辅导老师。你的教学方法：

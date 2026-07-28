@@ -4,6 +4,8 @@ import remarkGfm from "remark-gfm";
 import type { Message } from "../types";
 import "./MessageBubble.css";
 
+const API_BASE = import.meta.env.VITE_API_BASE || "";
+
 interface Props {
   message: Message;
 }
@@ -11,6 +13,14 @@ interface Props {
 // 过滤掉 AI 回复中的 Plan 更新标记
 function cleanContent(content: string) {
   return content.replace(/<!--PLAN_UPDATE:.*?-->/gs, "").trim();
+}
+
+// 检测内容是否包含大量英文（超过 40% 为英文字符则判定为英文内容）
+function isEnglishHeavy(text: string): boolean {
+  const cleaned = text.replace(/[^a-zA-Z一-鿿]/g, "");
+  if (!cleaned) return false;
+  const englishChars = cleaned.replace(/[^a-zA-Z]/g, "").length;
+  return englishChars / cleaned.length > 0.4;
 }
 
 // 思考中指示器（带计时）
@@ -35,10 +45,66 @@ function ThinkingIndicator() {
   );
 }
 
+// TTS 播放按钮
+function TtsButton({ text }: { text: string }) {
+  const [state, setState] = useState<"idle" | "loading" | "playing">("idle");
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const handleClick = async () => {
+    if (state === "playing") {
+      audioRef.current?.pause();
+      setState("idle");
+      return;
+    }
+
+    setState("loading");
+    try {
+      const res = await fetch(`${API_BASE}/tts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      const audio = new Audio(`${API_BASE}${data.audioUrl}`);
+      audioRef.current = audio;
+      audio.onended = () => setState("idle");
+      audio.onerror = () => setState("idle");
+      await audio.play();
+      setState("playing");
+    } catch {
+      setState("idle");
+    }
+  };
+
+  return (
+    <button
+      className={`tts-btn ${state}`}
+      onClick={handleClick}
+      title={state === "playing" ? "停止播放" : "朗读"}
+    >
+      {state === "loading" ? (
+        <span className="tts-spinner" />
+      ) : state === "playing" ? (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+          <rect x="6" y="4" width="4" height="16" />
+          <rect x="14" y="4" width="4" height="16" />
+        </svg>
+      ) : (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 8.5v7a4.5 4.5 0 002.5-3.5zM14 3.23v2.06a7 7 0 010 13.42v2.06a9 9 0 000-17.54z" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 export default function MessageBubble({ message }: Props) {
   const isUser = message.role === "user";
   const displayContent = isUser ? message.content : cleanContent(message.content);
   const isThinking = !isUser && !displayContent;
+  const showTts = !isUser && displayContent && !isEnglishHeavy(displayContent);
 
   return (
     <div className={`bubble-wrapper ${isUser ? "user" : "assistant"}`}>
@@ -61,6 +127,7 @@ export default function MessageBubble({ message }: Props) {
             </ReactMarkdown>
           </div>
         )}
+        {showTts && <TtsButton text={displayContent} />}
       </div>
     </div>
   );
