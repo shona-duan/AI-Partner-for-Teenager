@@ -10,7 +10,7 @@ interface Props {
   message: Message;
 }
 
-// 过滤掉 AI 回复中的 Plan 更新标记
+// 过滤掉 AI 回复中的内部标记
 function cleanContent(content: string) {
   return content.replace(/<!--PLAN_UPDATE:.*?-->/gs, "").trim();
 }
@@ -43,6 +43,55 @@ function ThinkingIndicator() {
       <span className="thinking-timer">{seconds}s</span>
     </div>
   );
+}
+
+// 交叉验证状态指示器
+function VerificationBadge({ status, note }: { status: string; note?: string }) {
+  const [seconds, setSeconds] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (status === "verifying") {
+      timerRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
+      return () => { if (timerRef.current) clearInterval(timerRef.current); };
+    }
+  }, [status]);
+
+  if (status === "verifying") {
+    return (
+      <div className="verification-badge verifying">
+        <span className="verification-spinner" />
+        <span>正在多模型交叉验证中... {seconds}s</span>
+      </div>
+    );
+  }
+
+  if (status === "passed") {
+    return (
+      <div className="verification-badge passed">
+        <span>✓ 已通过多模型交叉验证</span>
+      </div>
+    );
+  }
+
+  if (status === "conflict") {
+    return (
+      <div className="verification-badge conflict">
+        <span>⚠ 多模型答案存在差异，建议与老师确认</span>
+        {note && <span className="verification-detail">{note}</span>}
+      </div>
+    );
+  }
+
+  if (status === "skipped") {
+    return (
+      <div className="verification-badge skipped">
+        <span>— {note || "验证已跳过"}</span>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 // TTS 播放按钮
@@ -128,6 +177,9 @@ export default function MessageBubble({ message }: Props) {
           </div>
         )}
         {showTts && <TtsButton text={displayContent} />}
+        {message.verification && (
+          <VerificationBadge status={message.verification} note={message.verificationNote} />
+        )}
       </div>
     </div>
   );

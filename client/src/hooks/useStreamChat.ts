@@ -98,6 +98,21 @@ export function useStreamChat() {
                 setPlan(parsed.planUpdate);
                 continue;
               }
+              // 接收交叉验证事件
+              if (parsed.verification) {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantMsg.id
+                      ? {
+                          ...m,
+                          verification: parsed.verification === "start" ? "verifying" : parsed.verification,
+                          verificationNote: parsed.note || (parsed.verification === "conflict" ? `主模型: ${parsed.mainAnswer} | 验证模型: ${parsed.doubaoAnswer}` : undefined),
+                        }
+                      : m,
+                  ),
+                );
+                continue;
+              }
               if (parsed.content) {
                 setActiveTools([]);
                 setMessages((prev) =>

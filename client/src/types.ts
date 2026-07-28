@@ -5,6 +5,9 @@ export interface Message {
   content: string;
   // 图片附件（Mentor 模式用，第一张预览）
   imageUrl?: string;
+  // 防幻觉：交叉验证状态
+  verification?: "verifying" | "passed" | "conflict" | "skipped";
+  verificationNote?: string;
   timestamp: number;
 }
 

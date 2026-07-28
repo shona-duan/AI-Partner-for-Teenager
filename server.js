@@ -324,6 +324,43 @@ const ROLE_PROMPTS = {
   general: "你是一位友善的AI学习伙伴，回答简洁清晰，适合小学高年级和初中生理解。",
 };
 
+// --- 防幻觉：结构化约束 prompt（拼接到所有角色 system prompt 后面）---
+const ANTI_HALLUCINATION_SUFFIX = `
+
+## 回答规范（必须遵守）
+
+### 学科边界
+- 你只负责中小学阶段的学科辅导（语文、数学、英语、物理、化学、生物、历史、地理、政治）
+- 如果学生的问题明显超出以上范围（如医学诊断、法律咨询、成人话题等），友好地告知"这个问题超出了我的辅导范围"，并引导回学习话题
+
+### 推理过程要求
+- 涉及计算、推导、证明的题目，必须展示完整的解题步骤，不能只给结论
+- 每个步骤标明依据（如"根据勾股定理"、"由等式两边同时除以x"）
+- 如果涉及公式，先写出公式再代入数值
+
+### 难度标记（重要）
+当你的回答涉及数学计算、物理公式、化学方程式等需要精确推理的内容时，请在回答的最开头第一行输出一个难度标记，格式为：
+<!--DIFFICULTY:low--> 或 <!--DIFFICULTY:medium--> 或 <!--DIFFICULTY:high-->
+
+判断标准：
+- low：小学数学、简单四则运算、基础概念解释
+- medium：初一初二难度、简单方程、基础物理化学
+- high：初三及以上、复杂方程组、几何证明、高中物理化学
+
+如果问题是纯文字讨论（作文、历史、学习方法等），不需要输出难度标记。
+学生看不到这个标记，它仅用于系统内部处理。
+
+### 答案格式
+当回答涉及计算题且有明确数值答案时，在回答末尾用以下格式标注最终答案：
+【答案】xxx
+`;
+
+// 拼接角色 prompt + 防幻觉约束的辅助函数
+function buildSystemPrompt(role) {
+  const basePrompt = ROLE_PROMPTS[role] || ROLE_PROMPTS.general;
+  return basePrompt + ANTI_HALLUCINATION_SUFFIX;
+}
+
 // --- Plan 解析与状态管理工具函数 ---
 
 // --- Function Calling 工具定义 ---
@@ -512,10 +549,66 @@ app.get("/plan/:sessionId", (req, res) => {
   res.json({ plan: plan || null });
 });
 
+// --- 防幻觉：跨模型交叉验证 ---
+function parseDifficulty(text) {
+  const match = text.match(/<!--DIFFICULTY:(low|medium|high)-->/);
+  return match ? match[1] : null;
+}
+
+function extractAnswer(text) {
+  const match = text.match(/【答案】(.+?)(?:\n|$)/);
+  return match ? match[1].trim() : null;
+}
+
+// 去掉推送给前端时不该看到的内部标记
+function stripInternalMarkers(text) {
+  return text.replace(/<!--DIFFICULTY:(low|medium|high)-->\n?/g, "");
+}
+
+// 调用豆包模型做交叉验证
+async function crossValidateWithDoubao(question) {
+  if (!VOLC_VISION_API_KEY || !VOLC_VISION_MODEL) {
+    console.log("[交叉验证] 豆包模型未配置，跳过");
+    return null;
+  }
+
+  try {
+    const response = await axios.post(
+      "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+      {
+        model: VOLC_VISION_MODEL,
+        messages: [
+          {
+            role: "system",
+            content: "你是一个数学/理科验算助手。请直接解答以下题目，展示关键步骤，最后用格式【答案】xxx 给出最终答案。只需给出解题过程和答案，不需要其他寒暄。",
+          },
+          { role: "user", content: question },
+        ],
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${VOLC_VISION_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 30000,
+      },
+    );
+
+    const content = response.data.choices?.[0]?.message?.content || "";
+    return extractAnswer(content);
+  } catch (err) {
+    console.error("[交叉验证] 豆包调用失败:", err.message);
+    return null;
+  }
+}
+
 // --- 流式响应处理（抽取为公共函数）---
 function handleStreamResponse(response, res, sessionData, sessionId, role, message) {
   let fullReply = "";
   let buffer = "";
+  // 用于缓存开头的标记，等检测到非标记内容后再决定是否推送
+  let pendingContent = "";
+  let headerParsed = false;
 
   response.data.on("data", (chunk) => {
     buffer += chunk.toString();
@@ -536,7 +629,27 @@ function handleStreamResponse(response, res, sessionData, sessionId, role, messa
         const content = parsed.choices?.[0]?.delta?.content;
         if (content) {
           fullReply += content;
-          res.write(`data: ${JSON.stringify({ content })}\n\n`);
+
+          // 前几个 token 可能包含 <!--DIFFICULTY:xxx-->，需要拦截不推给前端
+          if (!headerParsed) {
+            pendingContent += content;
+            // 检查是否已经能判断标记结束
+            if (pendingContent.includes("-->")) {
+              headerParsed = true;
+              const cleaned = stripInternalMarkers(pendingContent);
+              if (cleaned) {
+                res.write(`data: ${JSON.stringify({ content: cleaned })}\n\n`);
+              }
+              pendingContent = "";
+            } else if (!pendingContent.startsWith("<!") && !pendingContent.startsWith("<")) {
+              // 不是标记开头，直接推送
+              headerParsed = true;
+              res.write(`data: ${JSON.stringify({ content: pendingContent })}\n\n`);
+              pendingContent = "";
+            }
+          } else {
+            res.write(`data: ${JSON.stringify({ content })}\n\n`);
+          }
         }
       } catch {
         // 忽略解析失败的行
@@ -544,7 +657,7 @@ function handleStreamResponse(response, res, sessionData, sessionId, role, messa
     }
   });
 
-  response.data.on("end", () => {
+  response.data.on("end", async () => {
     // 处理 buffer 中剩余数据
     if (buffer.trim().startsWith("data: ") && buffer.trim().slice(6) !== "[DONE]") {
       try {
@@ -552,10 +665,27 @@ function handleStreamResponse(response, res, sessionData, sessionId, role, messa
         const content = parsed.choices?.[0]?.delta?.content;
         if (content) {
           fullReply += content;
-          res.write(`data: ${JSON.stringify({ content })}\n\n`);
+          if (!headerParsed) {
+            pendingContent += content;
+            headerParsed = true;
+            const cleaned = stripInternalMarkers(pendingContent);
+            if (cleaned) {
+              res.write(`data: ${JSON.stringify({ content: cleaned })}\n\n`);
+            }
+          } else {
+            res.write(`data: ${JSON.stringify({ content })}\n\n`);
+          }
         }
       } catch {
         // 忽略
+      }
+    }
+
+    // 如果 pendingContent 还没推送（极端情况）
+    if (pendingContent) {
+      const cleaned = stripInternalMarkers(pendingContent);
+      if (cleaned) {
+        res.write(`data: ${JSON.stringify({ content: cleaned })}\n\n`);
       }
     }
 
@@ -571,8 +701,42 @@ function handleStreamResponse(response, res, sessionData, sessionId, role, messa
       }
     }
 
-    // 更新会话历史（存储时去掉 PLAN_UPDATE 标记）
-    const cleanReply = fullReply.replace(/<!--PLAN_UPDATE:.*?-->/gs, "").trim();
+    // 防幻觉：检测难度标记，high 时触发跨模型交叉验证
+    const difficulty = parseDifficulty(fullReply);
+    if (difficulty === "high") {
+      console.log(`[交叉验证] 检测到 high 难度，触发验证 session=${sessionId}`);
+      // 通知前端开始验证
+      res.write(`data: ${JSON.stringify({ verification: "start" })}\n\n`);
+
+      // 调用豆包模型验证
+      const mainAnswer = extractAnswer(fullReply);
+      const doubaoAnswer = await crossValidateWithDoubao(message);
+
+      if (doubaoAnswer === null) {
+        // 豆包调用失败，无法验证
+        res.write(`data: ${JSON.stringify({ verification: "skipped", note: "验证服务暂时不可用" })}\n\n`);
+      } else if (mainAnswer && doubaoAnswer) {
+        // 简单比较：去掉空格和标点后对比
+        const normalize = (s) => s.replace(/[\s，。、；：""''（）\(\)]/g, "");
+        const match = normalize(mainAnswer) === normalize(doubaoAnswer);
+        if (match) {
+          res.write(`data: ${JSON.stringify({ verification: "passed" })}\n\n`);
+          console.log(`[交叉验证] 通过 ✓ 主模型=${mainAnswer} 豆包=${doubaoAnswer}`);
+        } else {
+          res.write(`data: ${JSON.stringify({ verification: "conflict", mainAnswer, doubaoAnswer })}\n\n`);
+          console.log(`[交叉验证] 冲突 ✗ 主模型=${mainAnswer} 豆包=${doubaoAnswer}`);
+        }
+      } else {
+        // 无法提取答案格式，跳过验证
+        res.write(`data: ${JSON.stringify({ verification: "skipped", note: "无法提取标准答案格式" })}\n\n`);
+      }
+    }
+
+    // 更新会话历史（存储时去掉内部标记）
+    const cleanReply = fullReply
+      .replace(/<!--PLAN_UPDATE:.*?-->/gs, "")
+      .replace(/<!--DIFFICULTY:(low|medium|high)-->\n?/g, "")
+      .trim();
     const nonSystem = sessionData.messages.filter((m) => m.role !== "system");
     nonSystem.push({ role: "user", content: message });
     nonSystem.push({ role: "assistant", content: cleanReply });
@@ -610,7 +774,7 @@ app.post("/chat/stream", async (req, res) => {
   if (!existing || now - existing.updatedAt > SESSION_EXPIRE_MS) {
     sessionMessages.set(sessionId, {
       messages: [
-        { role: "system", content: ROLE_PROMPTS[role] || ROLE_PROMPTS.general },
+        { role: "system", content: buildSystemPrompt(role) },
       ],
       updatedAt: now,
     });
@@ -618,8 +782,8 @@ app.post("/chat/stream", async (req, res) => {
 
   const sessionData = sessionMessages.get(sessionId);
 
-  // 如果角色切换了，更新 system prompt
-  const currentSystemPrompt = ROLE_PROMPTS[role] || ROLE_PROMPTS.general;
+  // 如果角色切换了，更新 system prompt（含防幻觉约束）
+  const currentSystemPrompt = buildSystemPrompt(role);
 
   // Coach 模式：注入当前 Plan 状态到 system prompt
   let systemWithPlan = currentSystemPrompt;
@@ -635,7 +799,15 @@ app.post("/chat/stream", async (req, res) => {
   sessionData.messages[0] = { role: "system", content: systemWithPlan };
 
   try {
-    const userMessages = [...sessionData.messages, { role: "user", content: message }];
+    // 防幻觉：在用户消息前追加焦点提醒，防止上下文过长时 AI 回答偏移
+    const focusReminder = sessionData.messages.length > 6
+      ? { role: "system", content: `【焦点提醒】请只针对学生接下来这条消息进行回答，不要混入之前话题的内容。` }
+      : null;
+    const userMessages = [
+      ...sessionData.messages,
+      ...(focusReminder ? [focusReminder] : []),
+      { role: "user", content: message },
+    ];
 
     // Coach 模式：先用非流式请求检测是否需要调用工具
     if (role === "coach") {
