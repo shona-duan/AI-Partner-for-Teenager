@@ -151,11 +151,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0;
-  transition: opacity 0.2s, color 0.2s, background 0.2s;
+  opacity: 1;
+  transition: color 0.2s, background 0.2s;
 }
 
-.bubble:hover .tts-btn,
 .tts-btn.loading,
 .tts-btn.playing {
   opacity: 1;

@@ -3,29 +3,59 @@ import type { Message, TeacherRole, LearningPlan } from "../types";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 
-// 生成简易 ID
 function genId() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }
 
-// 工具名称中文映射
 const TOOL_NAME_MAP: Record<string, string> = {
   generateQuiz: "生成练习题",
   checkProgress: "评估学习进度",
   suggestResources: "推荐学习资源",
 };
 
-export function useStreamChat() {
-  const [messages, setMessages] = useState<Message[]>([]);
+type RoleState = {
+  messages: Message[];
+  plan: LearningPlan | null;
+  sessionId: string;
+};
+
+function createRoleState(): RoleState {
+  return { messages: [], plan: null, sessionId: genId() };
+}
+
+export function useStreamChat(currentRole: TeacherRole) {
+  const [roleStates, setRoleStates] = useState<Record<TeacherRole, RoleState>>({
+    tutor: createRoleState(),
+    mentor: createRoleState(),
+    coach: createRoleState(),
+  });
   const [isStreaming, setIsStreaming] = useState(false);
-  const [plan, setPlan] = useState<LearningPlan | null>(null);
   const [activeTools, setActiveTools] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
-  const sessionIdRef = useRef<string>(genId());
+
+  const currentState = roleStates[currentRole];
+  const messages = currentState.messages;
+  const plan = currentState.plan;
+
+  const setMessages = (updater: (prev: Message[]) => Message[]) => {
+    setRoleStates((prev) => ({
+      ...prev,
+      [currentRole]: {
+        ...prev[currentRole],
+        messages: updater(prev[currentRole].messages),
+      },
+    }));
+  };
+
+  const setPlan = (newPlan: LearningPlan | null) => {
+    setRoleStates((prev) => ({
+      ...prev,
+      [currentRole]: { ...prev[currentRole], plan: newPlan },
+    }));
+  };
 
   const send = useCallback(
     async (content: string, role: TeacherRole, imageFiles?: File[]) => {
-      // 如果有图片，走图片上传接口
       if (imageFiles && imageFiles.length > 0) {
         await sendWithImage(content, role, imageFiles);
         return;
@@ -57,7 +87,7 @@ export function useStreamChat() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             message: content,
-            sessionId: sessionIdRef.current,
+            sessionId: roleStates[role].sessionId,
             role,
           }),
           signal: controller.signal,
@@ -88,17 +118,14 @@ export function useStreamChat() {
             try {
               const parsed = JSON.parse(data);
               if (parsed.error) throw new Error(parsed.error);
-              // 接收工具调用事件
               if (parsed.toolCall) {
                 setActiveTools(parsed.toolCall);
                 continue;
               }
-              // 接收 Plan 更新事件
               if (parsed.planUpdate) {
                 setPlan(parsed.planUpdate);
                 continue;
               }
-              // 接收交叉验证事件
               if (parsed.verification) {
                 setMessages((prev) =>
                   prev.map((m) =>
@@ -143,10 +170,9 @@ export function useStreamChat() {
         abortRef.current = null;
       }
     },
-    [],
+    [roleStates, currentRole],
   );
 
-  // 图片上传 + 反馈（Mentor 模式）
   async function sendWithImage(
     content: string,
     role: TeacherRole,
@@ -175,7 +201,7 @@ export function useStreamChat() {
     const formData = new FormData();
     imageFiles.forEach((file) => formData.append("images", file));
     formData.append("message", content || "请帮我看看这份作业，给出具体的反馈和改进建议");
-    formData.append("sessionId", sessionIdRef.current);
+    formData.append("sessionId", roleStates[role].sessionId);
     formData.append("role", role);
 
     try {
@@ -250,10 +276,12 @@ export function useStreamChat() {
   }, []);
 
   const clear = useCallback(() => {
-    setMessages([]);
+    setRoleStates((prev) => ({
+      ...prev,
+      [currentRole]: createRoleState(),
+    }));
     setPlan(null);
-    sessionIdRef.current = genId();
-  }, []);
+  }, [currentRole]);
 
   return { messages, isStreaming, plan, activeTools, TOOL_NAME_MAP, send, stop, clear };
 }

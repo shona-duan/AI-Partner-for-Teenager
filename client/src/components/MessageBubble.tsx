@@ -99,6 +99,13 @@ function TtsButton({ text }: { text: string }) {
   const [state, setState] = useState<"idle" | "loading" | "playing">("idle");
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
+  useEffect(() => {
+    return () => {
+      audioRef.current?.pause();
+      audioRef.current = null;
+    };
+  }, []);
+
   const handleClick = async () => {
     if (state === "playing") {
       audioRef.current?.pause();

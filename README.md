@@ -73,7 +73,10 @@
 | Agent 工具调用 | AI 自主决定何时调用 generateQuiz / checkProgress / suggestResources |
 | 学习计划管理 | 结构化 Plan 状态机，前端实时展示进度 |
 | 多角色系统 | Tutor（引导式）、Mentor（作业反馈）、Coach（Agent 规划） |
+| 防幻觉机制 | Prompt 学科边界约束 + 上下文焦点管理 + DeepSeek × 豆包跨模型交叉验证 |
 | 图片识别 | 粘贴/上传作业图片，视觉模型生成反馈 |
+| TTS 语音合成 | 点击朗读 AI 回复，英文内容自动隐藏 |
+| PWA 支持 | 可安装到桌面/手机，Service Worker 离线缓存静态资源 |
 | 会话隔离 | 按 sessionId 独立上下文，24h 过期 |
 | Markdown 渲染 | 代码块、列表、表格完整支持 |
 
